@@ -44,10 +44,20 @@ const whoamiCommand: CommandModule<object, WhoamiArgs> = {
 		const client = createCloudflareClientWithToken({ apiToken: token });
 		let userEmail: string | undefined;
 		let accounts: Array<{ id: string; name: string }> = [];
-		const [userResult, accountsResult] = await Promise.allSettled([
-			client.user.get(),
-			fetchAuthorizedAccounts(),
-		]);
+		const [verifyResult, userResult, accountsResult] = await Promise.allSettled(
+			[
+				// /user/tokens/verify works for any valid token regardless of its
+				// permission scope; /user and the account lookup 403 for scoped
+				// tokens, so they must not be the sole signal of validity.
+				client.user.tokens.verify(),
+				client.user.get(),
+				fetchAuthorizedAccounts(),
+			]
+		);
+
+		if (verifyResult.status === "rejected" && process.env.DEBUG) {
+			console.error("Token verify error:", verifyResult.reason);
+		}
 
 		if (userResult.status === "fulfilled") {
 			const user = userResult.value;
@@ -64,7 +74,10 @@ const whoamiCommand: CommandModule<object, WhoamiArgs> = {
 			console.error("Account lookup error:", accountsResult.reason);
 		}
 
+		// Fall back to the user/account lookups for auth modes where the verify
+		// endpoint may reject (e.g. OAuth tokens, which are not API tokens).
 		const tokenValid =
+			verifyResult.status === "fulfilled" ||
 			userResult.status === "fulfilled" ||
 			accountsResult.status === "fulfilled";
 
